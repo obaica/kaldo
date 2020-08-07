@@ -23,7 +23,7 @@ phonons = Phonons(forceconstants=forceconstants,
                   temperature=temperature)
 
 print('AF conductivity')
-print(Conductivity(phonons=phonons, method='qhgk').conductivity.sum(axis=0))
+print(-1*Conductivity(phonons=phonons, method='qhgk').conductivity.sum(axis=0))
 
 plt.scatter(phonons.frequency.flatten()[3:], phonons.bandwidth.flatten()[3:], s=5)
 plt.ylabel('gamma_THz', fontsize=16, fontweight='bold')

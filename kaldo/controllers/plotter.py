@@ -134,8 +134,9 @@ def plot_dos(phonons, bandwidth=.05,n_points=200, is_showing=True, input_fig=Non
         fig = plt.figure()
     else:
         fig = input_fig
-    kde = KernelDensity(kernel='gaussian', bandwidth=bandwidth).fit(phonons.frequency.flatten(order='C').reshape(-1, 1))
-    x = np.linspace(phonons.frequency.min(), phonons.frequency.max(), n_points)
+    physical_mode = phonons.physical_mode
+    kde = KernelDensity(kernel='gaussian', bandwidth=bandwidth).fit(phonons.frequency[physical_mode].flatten(order='C').reshape(-1, 1))
+    x = np.linspace(phonons.frequency[physical_mode].min(), phonons.frequency[physical_mode].max(), n_points)
     y = np.exp(kde.score_samples(x.reshape((-1, 1))))
     plt.plot(x, y)
     plt.fill_between(x, y, alpha=.2)

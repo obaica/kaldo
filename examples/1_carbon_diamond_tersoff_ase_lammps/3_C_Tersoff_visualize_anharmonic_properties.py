@@ -1,5 +1,5 @@
-# Example 5.2: carbon diamond, Tersoff potential 
-# Computes:anharmonic properties and thermal conductivity for carbon diamond (2 atoms per cell)
+# Example 5.3: carbon diamond, Tersoff potential 
+# Computes:Visualize anharmonic propertiesfor carbon diamond (2 atoms per cell)
 # Uses: ASE, LAMMPS
 # External files: forcefields/C.tersoff
 
@@ -49,7 +49,6 @@ forceconstants.third.calculate(LAMMPSlib(**lammps_inputs))
 # 'is_classic': specify if the system is classic, True for classical and False for quantum
 # 'temperature: temperature (Kelvin) at which simulation is performed
 # 'folder': name of folder containing phonon property and thermal conductivity calculations
-# 'is_tf_backend': specify if 3rd order phonons scattering calculations should be performed on tensorflow (True) or numpy (False)
 # 'storage': Format to storage phonon properties ('formatted' for ASCII format data, 'numpy' 
 #            for python numpy array and 'memory' for quick calculations, no data stored)
 
@@ -59,7 +58,6 @@ phonons_config = {'kpts': [k_points, k_points, k_points],
                   'is_classic': False, 
                   'temperature': 300, #'temperature'=300K
                   'folder': 'ald_c_diamond',
-                  'is_tf_backend': False,
 		   'storage': 'formatted'}
 # Set up phonon object by passing in configuration details and the forceconstants object computed above
 phonons = Phonons(forceconstants=forceconstants, **phonons_config)
@@ -75,22 +73,10 @@ is_show_fig = False
 
 # Visualize anharmonic phonon properties by using matplotlib. 
 # The following show examples of plotting
-# heat capacity vs frequency and 
 # phase space vs frequency
 # 'order': Index order to reshape array, 
 # 'order'='C' for C-like index order; 'F' for Fortran-like index order
 frequency = phonons.frequency.flatten(order='C')
-heat_capacity = phonons.heat_capacity.flatten(order='C')
-plt.figure()
-plt.scatter(frequency[3:], 1e23 * heat_capacity[3:], s=5) # Get rid of the first three non-physical modes while plotting
-plt.xlabel("$\\nu$ (THz)", fontsize=16)
-plt.ylabel("$C_{v} \ (10^{23} \ J/K)$", fontsize=16)
-plt.savefig(folder + '/cv_vs_freq.png', dpi=300)
-if not is_show_fig:
-  plt.close()
-else:
-  plt.show()
-
 phase_space = phonons.phase_space.flatten(order='C')
 plt.figure()
 plt.scatter(frequency[3:], phase_space[3:], s=5)
@@ -102,31 +88,6 @@ if not is_show_fig:
 else:
   plt.show()
 
-### Set up the Conductivity object and thermal conductivity calculations ####
-
-# Compute thermal conductivity (t.c.) by solving Boltzmann Transport
-# Equation (BTE) with various of methods.
-
-# 'phonons': phonon object obtained from the above calculations
-# 'method': specify methods to solve for BTE  
-# ('rta' for RTA,'sc' for self-consistent and 'inverse' for direct inversion of the scattering matrix)
-# 'storage': Format to storage conductivity and mean free path data ('formatted' for ASCII format data, 'numpy' 
-#            for python numpy array and 'memory' for quick calculations, no data stored)
-
-print('\n')
-inv_cond_matrix = (Conductivity(phonons=phonons, method='inverse', storage='memory').conductivity.sum(axis=0))
-print('Inverse conductivity (W/m-K): %.3f' % (np.mean(np.diag(inv_cond_matrix))))
-print(inv_cond_matrix)
-
-print('\n')
-sc_cond_matrix = Conductivity(phonons=phonons, method='sc', n_iterations=20, storage='memory').conductivity.sum(axis=0)
-print('Self-consistent conductivity (W/m-K): %.3f' % (np.mean(np.diag(sc_cond_matrix))))
-print(sc_cond_matrix)
-
-print('\n')
-rta_cond_matrix = Conductivity(phonons=phonons, method='rta', storage='memory').conductivity.sum(axis=0)
-print('RTA conductivity (W/m-K): %.3f' % (np.mean(np.diag(rta_cond_matrix))))
-print(rta_cond_matrix)
 
 ### Compare phonon life times at different level of theory ########
 
@@ -134,12 +95,11 @@ print(rta_cond_matrix)
 # computed using Relaxation Time Approximation (RTA) and at direct inversion
 # of scattering matrix (inverse) methods.
 
-# 'physical_mode': specify whether a phonon mode is physcial (True) and non-physcial (False)
 # 'n_phonons': number of phonons in the simulation
 # 'band_width': phonon bandwdith (THz) computed from diagonal elements
 #  of scattering matrix
-physical_mode = phonons.physical_mode.reshape(phonons.n_phonons)
-tau_RTA = (phonons.bandwidth.flatten(order='C')[physical_mode]) ** (-1)
+band_width = phonons.bandwidth.flatten(order='C')
+tau_RTA = (band_width[3:]) ** (-1)
 
 # Compute life times from direct inversion by dividing
 # the mean free path from inversion by the group velocities
