@@ -393,7 +393,8 @@ class HarmonicWithQ(Observable):
         atoms = self.atoms
         cell = atoms.cell
         n_unit_cell = atoms.positions.shape[0]
-        replicated_positions = self.second.replicated_atoms.positions
+        n_replicas = np.prod(supercell)
+        replicated_positions = self.second.replicated_atoms.positions.reshape((n_replicas, n_unit_cell, 3))
         # mass = atoms.get_masses()
         # masses_2d = np.zeros((n_unit_cell, n_unit_cell))
         distance = np.zeros((n_unit_cell, n_unit_cell, 3))
@@ -421,6 +422,7 @@ class HarmonicWithQ(Observable):
         ddyn_s = np.zeros((n_unit_cell, 3, n_unit_cell, 3, 3), dtype=np.complex)
         list_of_index = np.round((replicated_positions - atoms.positions).dot(
             np.linalg.inv(atoms.cell))).astype(np.int)
+        list_of_index = list_of_index
         list_of_index = list_of_index[:, 0, :]
         tt = []
         rreplica = []
@@ -455,6 +457,6 @@ class HarmonicWithQ(Observable):
                             for jpol in np.arange(3):
                                 ddyn_s[iat, ipol, jat, jpol, :] -= replica_position * fc_s[
                                     jat, jpol, t[0], t[1], t[2], iat, ipol] * np.exp(-1j * qr) * weight
-        return ddyn_s.reshape((n_unit_cell * 3, n_unit_cell * 3, 3))
+        return ddyn_s.reshape((n_unit_cell * 3, n_unit_cell * 3, 3))[..., direction]
 
 
