@@ -70,9 +70,22 @@ class HarmonicWithQ(Observable):
 
 
     @lazy_property(label='')
+    def _supercell_replicas(self):
+        _supercell_replicas = self.calculate_super_replicas()
+        return _supercell_replicas
+
+
+    @lazy_property(label='')
+    def _supercell_positions(self):
+        _supercell_postions = self.calculate_supercell_positions()
+        return _supercell_postions
+
+
+    @lazy_property(label='')
     def _dynmat(self):
         _dynmat = self.calculate_dynmat()
         return _dynmat
+
     
 
     @lazy_property(label='<q_point>')
@@ -284,52 +297,15 @@ class HarmonicWithQ(Observable):
         return tf.convert_to_tensor(dynmat * evtotenjovermol)
 
 
-    def calculate_eigensystem_lapack(self, only_eigenvals=False):
-        q_point = self.q_point
+    def calculate_super_replicas(self):
+
         scell = self.supercell
         n_replicas = np.prod(scell)
         atoms = self.atoms
         cell = atoms.cell
         n_unit_cell = atoms.positions.shape[0]
-        distance = np.zeros((n_unit_cell, n_unit_cell, 3))
-        positions = atoms.positions
-
-        # ev_s = (units._hplanck) * units.J
-        # toTHz = 2 * np.pi * units.Rydberg / ev_s * 1e-12
-        # massfactor = 2 * units._me * units._Nav * 1000
-
-        # fc_s = forceconstants.second_order.dynmat(atoms.get_masses()) / (Rydberg / (Bohr ** 2))
-        # EVTOTENJOVERMOL = units.mol / (10 * units.J)
-        # fc_s = fc_s / EVTOTENJOVERMOL * massfactor
-        fc_s = self._dynmat.numpy()
         replicated_positions = self.second.replicated_atoms.positions.reshape((n_replicas, n_unit_cell, 3))
 
-        # mass = self.atoms.get_masses()
-        shape = fc_s.shape
-        log_size(shape, np.float, name='dynmat')
-        # fc_s = second * 1 / np.sqrt(mass[np.newaxis, :, np.newaxis, np.newaxis, np.newaxis, np.newaxis])
-        # fc_s = fc_s * 1 / np.sqrt(mass[np.newaxis, np.newaxis, np.newaxis, np.newaxis, :, np.newaxis])
-        # evtotenjovermol = units.mol / (10 * units.J)
-        # fc_s = (fc_s * evtotenjovermol)
-        fc_s = fc_s.reshape((n_unit_cell, 3, scell[0], scell[1], scell[2], n_unit_cell, 3))
-
-        replicated_cell = cell * scell
-        ir = 0
-
-
-        sc_r_pos = np.zeros((3 ** 3, 3))
-        sc_r_pos_norm = np.zeros((3 ** 3))
-
-        for ix2 in [-1, 0, 1]:
-            for iy2 in [-1, 0, 1]:
-                for iz2 in [-1, 0, 1]:
-
-                    for i in np.arange(3):
-                        sc_r_pos[ir, i] = np.dot(replicated_cell[:, i], np.array([ix2,iy2,iz2]))
-                    sc_r_pos_norm[ir] = 0.5 * np.dot(sc_r_pos[ir], sc_r_pos[ir])
-                    ir = ir + 1
-        dyn_s = np.zeros((n_unit_cell, 3, n_unit_cell, 3), dtype=np.complex)
-        ddyn_s = np.zeros((n_unit_cell, 3, n_unit_cell, 3, 3), dtype=np.complex)
         list_of_index = np.round((replicated_positions - self.atoms.positions).dot(
             np.linalg.inv(atoms.cell))).astype(np.int)
         list_of_index = list_of_index[:, 0, :]
@@ -344,15 +320,52 @@ class HarmonicWithQ(Observable):
                         scell_id = np.array([ix2 * scell[0], iy2 * scell[1], iz2 * scell[2]])
                         replica_id = list_of_index[f]
                         t = replica_id + scell_id
-                        replica_position = np.tensordot(cell, t, (0, -1))
+                        replica_position = np.tensordot(t, cell, (-1, 0))
                         tt.append(t)
                         rreplica.append(replica_position)
 
         tt = np.array(tt)
-        rreplica = np.array(rreplica)
+        return tt
+
+
+    def calculate_supercell_positions(self):
+        supercell = self.supercell
+        atoms = self.atoms
+        cell = atoms.cell
+        replicated_cell = cell * supercell
+        sc_r_pos = np.zeros((3 ** 3, 3))
+        ir = 0
+        for ix2 in [-1, 0, 1]:
+            for iy2 in [-1, 0, 1]:
+                for iz2 in [-1, 0, 1]:
+                    for i in np.arange(3):
+                        sc_r_pos[ir, i] = np.dot(replicated_cell[:, i], np.array([ix2,iy2,iz2]))
+                    ir = ir + 1
+        return sc_r_pos
+
+
+    def calculate_eigensystem_lapack(self, only_eigenvals=False):
+        q_point = self.q_point
+        scell = self.supercell
+        atoms = self.atoms
+        cell = atoms.cell
+        n_unit_cell = atoms.positions.shape[0]
+        positions = atoms.positions
+        fc_s = self._dynmat.numpy()
+        shape = fc_s.shape
+        log_size(shape, np.float, name='dynmat')
+        fc_s = fc_s.reshape((n_unit_cell, 3, scell[0], scell[1], scell[2], n_unit_cell, 3))
+
+        sc_r_pos = self._supercell_positions
+
+        sc_r_pos_norm = 1 / 2 * np.linalg.norm(sc_r_pos, axis=1) ** 2
+        dyn_s = np.zeros((n_unit_cell, 3, n_unit_cell, 3), dtype=np.complex)
+
+        tt = self._supercell_replicas
         for ind in range(tt.shape[0]):
             t = tt[ind]
-            replica_position = rreplica[ind]
+            replica_position = np.tensordot(t, cell, (-1, 0))
+
             for iat in np.arange(n_unit_cell):
                 for jat in np.arange(n_unit_cell):
                     distance = replica_position + (positions[iat, :] - positions[jat, :])
@@ -368,17 +381,12 @@ class HarmonicWithQ(Observable):
                                      jat, jpol, t[0], t[1], t[2], iat, ipol] * np.exp(-1j * qr) * weight
 
 
-        frequency = np.zeros((n_unit_cell * 3))
-        if only_eigenvals:
-            esystem = np.zeros((n_unit_cell * 3), dtype=np.complex)
-        else:
-            esystem = np.zeros((n_unit_cell * 3 + 1, n_unit_cell * 3), dtype=np.complex)
 
         dyn = dyn_s[...].reshape((n_unit_cell * 3, n_unit_cell * 3))
 
         omega2,eigenvect,info = zheev(dyn)
-        frequency[:] = np.sign(omega2) * np.sqrt(np.abs(omega2))
-        frequency[:] = frequency[:] / np.pi / 2
+        frequency = np.sign(omega2) * np.sqrt(np.abs(omega2))
+        frequency = frequency[:] / np.pi / 2
         if only_eigenvals:
             esystem = (frequency[ :] * np.pi * 2) ** 2
         else:
@@ -387,62 +395,24 @@ class HarmonicWithQ(Observable):
 
 
     def calculate_dynmat_derivatives_lapack(self, direction=None):
-        # Debugging method to compare results, do not use
+
         q_point = self.q_point
         supercell = self.supercell
         atoms = self.atoms
         cell = atoms.cell
         n_unit_cell = atoms.positions.shape[0]
-        n_replicas = np.prod(supercell)
-        replicated_positions = self.second.replicated_atoms.positions.reshape((n_replicas, n_unit_cell, 3))
-        # mass = atoms.get_masses()
-        # masses_2d = np.zeros((n_unit_cell, n_unit_cell))
-        distance = np.zeros((n_unit_cell, n_unit_cell, 3))
+        ddyn_s = np.zeros((n_unit_cell, 3, n_unit_cell, 3), dtype=np.complex)
         positions = atoms.positions
-        replicated_cell = cell * supercell
         fc_s = self._dynmat.numpy()
-        # fc_s = fc_s / (Rydberg / (Bohr ** 2))
-        # EVTOTENJOVERMOL = units.mol / (10 * units.J)
-        # massfactor = 2 * units._me * units._Nav * 1000
-        # fc_s = fc_s / EVTOTENJOVERMOL * massfactor
         fc_s = fc_s.reshape((n_unit_cell, 3, supercell[0], supercell[1], supercell[2], n_unit_cell, 3))
-        j = 0
 
-        sc_r_pos = np.zeros((3 ** 3, 3))
-        ir = 0
-        for ix2 in [-1, 0, 1]:
-            for iy2 in [-1, 0, 1]:
-                for iz2 in [-1, 0, 1]:
-
-                    for i in np.arange(3):
-                        sc_r_pos[ir, i] = np.dot(replicated_cell[:, i], np.array([ix2,iy2,iz2]))
-                    ir = ir + 1
-
+        sc_r_pos = self._supercell_positions
         sc_r_pos_norm = 1 / 2 * np.linalg.norm(sc_r_pos, axis=1) ** 2
-        ddyn_s = np.zeros((n_unit_cell, 3, n_unit_cell, 3, 3), dtype=np.complex)
-        list_of_index = np.round((replicated_positions - atoms.positions).dot(
-            np.linalg.inv(atoms.cell))).astype(np.int)
-        list_of_index = list_of_index
-        list_of_index = list_of_index[:, 0, :]
-        tt = []
-        rreplica = []
-        for ix2 in [-1, 0, 1]:
-            for iy2 in [-1, 0, 1]:
-                for iz2 in [-1, 0, 1]:
-                    for f in range(list_of_index.shape[0]):
+        tt = self._supercell_replicas
 
-                        scell_id = np.array([ix2 * supercell[0], iy2 * supercell[1], iz2 * supercell[2]])
-                        replica_id = list_of_index[f]
-                        t = replica_id + scell_id
-                        replica_position = np.tensordot(cell, t, (0, -1))
-                        tt.append(t)
-                        rreplica.append(replica_position)
-
-        tt = np.array(tt)
-        rreplica = np.array(rreplica)
         for ind in range(tt.shape[0]):
             t = tt[ind]
-            replica_position = rreplica[ind]
+            replica_position = np.tensordot(t, cell, (-1, 0))
 
             for iat in np.arange(n_unit_cell):
                 for jat in np.arange(n_unit_cell):
@@ -455,8 +425,8 @@ class HarmonicWithQ(Observable):
                         qr = 2. * np.pi * np.dot(q_point[:], t[:])
                         for ipol in np.arange(3):
                             for jpol in np.arange(3):
-                                ddyn_s[iat, ipol, jat, jpol, :] -= replica_position * fc_s[
+                                ddyn_s[iat, ipol, jat, jpol] -= replica_position[direction] * fc_s[
                                     jat, jpol, t[0], t[1], t[2], iat, ipol] * np.exp(-1j * qr) * weight
-        return ddyn_s.reshape((n_unit_cell * 3, n_unit_cell * 3, 3))[..., direction]
+        return ddyn_s.reshape((n_unit_cell * 3, n_unit_cell * 3))
 
 
