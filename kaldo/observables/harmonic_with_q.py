@@ -8,7 +8,6 @@ import ase.units as units
 from kaldo.helpers.storage import lazy_property
 import tensorflow as tf
 from scipy.linalg.lapack import zheev
-
 from kaldo.helpers.logger import get_logger, log_size
 logging = get_logger()
 
@@ -19,7 +18,7 @@ EVTOTENJOVERMOL = units.mol / (10 * units.J)
 class HarmonicWithQ(Observable):
 
     def __init__(self, q_point, second,
-                 distance_threshold=None, storage='numpy', is_nw=False, *kargs, **kwargs):
+                 distance_threshold=None, storage='numpy', is_nw=False, is_unfolding=False, *kargs, **kwargs):
         super().__init__(*kargs, **kwargs)
         self.q_point = q_point
         self.atoms = second.atoms
@@ -30,6 +29,7 @@ class HarmonicWithQ(Observable):
         self.distance_threshold = distance_threshold
         self.physical_mode= np.ones((1, self.n_modes), dtype=bool)
         self.is_nw = is_nw
+        self.is_unfolding = is_unfolding
         if (q_point == [0, 0, 0]).all():
             if self.is_nw:
                 self.physical_mode[0, :4] = False
@@ -55,37 +55,29 @@ class HarmonicWithQ(Observable):
 
     @lazy_property(label='<q_point>')
     def _dynmat_derivatives_x(self):
-        _dynmat_derivatives = self.calculate_dynmat_derivatives_lapack(direction=0)
+        if self.is_unfolding:
+            _dynmat_derivatives = self.calculate_dynmat_derivatives_unfolded(direction=0)
+        else:
+            _dynmat_derivatives = self.calculate_dynmat_derivatives(direction=0)
         return _dynmat_derivatives
+
 
     @lazy_property(label='<q_point>')
     def _dynmat_derivatives_y(self):
-        _dynmat_derivatives = self.calculate_dynmat_derivatives_lapack(direction=1)
+        if self.is_unfolding:
+            _dynmat_derivatives = self.calculate_dynmat_derivatives_unfolded(direction=1)
+        else:
+            _dynmat_derivatives = self.calculate_dynmat_derivatives(direction=1)
         return _dynmat_derivatives
+
 
     @lazy_property(label='<q_point>')
     def _dynmat_derivatives_z(self):
-        _dynmat_derivatives = self.calculate_dynmat_derivatives_lapack(direction=2)
+        if self.is_unfolding:
+            _dynmat_derivatives = self.calculate_dynmat_derivatives_unfolded(direction=2)
+        else:
+            _dynmat_derivatives = self.calculate_dynmat_derivatives(direction=2)
         return _dynmat_derivatives
-
-
-    @lazy_property(label='')
-    def _supercell_replicas(self):
-        _supercell_replicas = self.calculate_super_replicas()
-        return _supercell_replicas
-
-
-    @lazy_property(label='')
-    def _supercell_positions(self):
-        _supercell_postions = self.calculate_supercell_positions()
-        return _supercell_postions
-
-
-    @lazy_property(label='')
-    def _dynmat(self):
-        _dynmat = self.calculate_dynmat()
-        return _dynmat
-
     
 
     @lazy_property(label='<q_point>')
@@ -96,7 +88,10 @@ class HarmonicWithQ(Observable):
 
     @lazy_property(label='<q_point>')
     def _eigensystem(self):
-        _eigensystem = self.calculate_eigensystem_lapack(only_eigenvals=False)
+        if self.is_unfolding:
+            _eigensystem = self.calculate_eigensystem_unfolded(only_eigenvals=False)
+        else:
+            _eigensystem = self.calculate_eigensystem(only_eigenvals=False)
         return _eigensystem
 
 
@@ -120,7 +115,10 @@ class HarmonicWithQ(Observable):
 
     def calculate_frequency(self):
         #TODO: replace calculate_eigensystem() with eigensystem
-        eigenvals = self.calculate_eigensystem_lapack(only_eigenvals=True)
+        if self.is_unfolding:
+            eigenvals = self.calculate_eigensystem_unfolded(only_eigenvals=True)
+        else:
+            eigenvals = self.calculate_eigensystem(only_eigenvals=True)
         frequency = np.abs(eigenvals) ** .5 * np.sign(eigenvals) / (np.pi * 2.)
         return frequency.real
 
@@ -134,7 +132,7 @@ class HarmonicWithQ(Observable):
         replicated_cell = self.second.replicated_atoms.cell
         replicated_cell_inv = self.second._replicated_cell_inv
         cell_inv = self.second.cell_inv
-        dynmat = self._dynmat
+        dynmat = self.second.dynmat
         positions = self.atoms.positions
         n_unit_cell = atoms.positions.shape[0]
         n_modes = n_unit_cell * 3
@@ -239,7 +237,7 @@ class HarmonicWithQ(Observable):
         atoms = self.atoms
         n_unit_cell = atoms.positions.shape[0]
         n_replicas = np.prod(self.supercell)
-        dynmat = self._dynmat
+        dynmat = self.second.dynmat
         cell_inv = self.second.cell_inv
         replicated_cell_inv = self.second._replicated_cell_inv
         is_at_gamma = (q_point == (0, 0, 0)).all()
@@ -287,90 +285,26 @@ class HarmonicWithQ(Observable):
         return esystem
 
 
-    def calculate_dynmat(self):
-        mass = self.atoms.get_masses()
-        shape = self.second.value.shape
-        log_size(shape, np.float, name='dynmat')
-        dynmat = self.second.value * 1 / np.sqrt(mass[np.newaxis, :, np.newaxis, np.newaxis, np.newaxis, np.newaxis])
-        dynmat = dynmat * 1 / np.sqrt(mass[np.newaxis, np.newaxis, np.newaxis, np.newaxis, :, np.newaxis])
-        evtotenjovermol = units.mol / (10 * units.J)
-        return tf.convert_to_tensor(dynmat * evtotenjovermol)
-
-
-    def calculate_super_replicas(self):
-
-        scell = self.supercell
-        n_replicas = np.prod(scell)
-        atoms = self.atoms
-        cell = atoms.cell
-        n_unit_cell = atoms.positions.shape[0]
-        replicated_positions = self.second.replicated_atoms.positions.reshape((n_replicas, n_unit_cell, 3))
-
-        list_of_index = np.round((replicated_positions - self.atoms.positions).dot(
-            np.linalg.inv(atoms.cell))).astype(np.int)
-        list_of_index = list_of_index[:, 0, :]
-
-        tt = []
-        rreplica = []
-        for ix2 in [-1, 0, 1]:
-            for iy2 in [-1, 0, 1]:
-                for iz2 in [-1, 0, 1]:
-                    for f in range(list_of_index.shape[0]):
-
-                        scell_id = np.array([ix2 * scell[0], iy2 * scell[1], iz2 * scell[2]])
-                        replica_id = list_of_index[f]
-                        t = replica_id + scell_id
-                        replica_position = np.tensordot(t, cell, (-1, 0))
-                        tt.append(t)
-                        rreplica.append(replica_position)
-
-        tt = np.array(tt)
-        return tt
-
-
-    def calculate_supercell_positions(self):
-        supercell = self.supercell
-        atoms = self.atoms
-        cell = atoms.cell
-        replicated_cell = cell * supercell
-        sc_r_pos = np.zeros((3 ** 3, 3))
-        ir = 0
-        for ix2 in [-1, 0, 1]:
-            for iy2 in [-1, 0, 1]:
-                for iz2 in [-1, 0, 1]:
-                    for i in np.arange(3):
-                        sc_r_pos[ir, i] = np.dot(replicated_cell[:, i], np.array([ix2,iy2,iz2]))
-                    ir = ir + 1
-        return sc_r_pos
-
-
-    def calculate_eigensystem_lapack(self, only_eigenvals=False):
+    def calculate_eigensystem_unfolded(self, only_eigenvals=False):
         q_point = self.q_point
         scell = self.supercell
         atoms = self.atoms
         cell = atoms.cell
         n_unit_cell = atoms.positions.shape[0]
         positions = atoms.positions
-        fc_s = self._dynmat.numpy()
-        shape = fc_s.shape
-        log_size(shape, np.float, name='dynmat')
+        fc_s = self.second.dynmat.numpy()
         fc_s = fc_s.reshape((n_unit_cell, 3, scell[0], scell[1], scell[2], n_unit_cell, 3))
-
-        sc_r_pos = self._supercell_positions
-
+        sc_r_pos = self.second.supercell_positions
         sc_r_pos_norm = 1 / 2 * np.linalg.norm(sc_r_pos, axis=1) ** 2
         dyn_s = np.zeros((n_unit_cell, 3, n_unit_cell, 3), dtype=np.complex)
-
-        tt = self._supercell_replicas
+        tt = self.second.supercell_replicas
         for ind in range(tt.shape[0]):
             t = tt[ind]
             replica_position = np.tensordot(t, cell, (-1, 0))
-
             for iat in np.arange(n_unit_cell):
                 for jat in np.arange(n_unit_cell):
                     distance = replica_position + (positions[iat, :] - positions[jat, :])
                     projection = (np.dot(sc_r_pos, distance) - sc_r_pos_norm[:])
-
                     if ((projection <= 1e-6).all()):
                         neq = (np.abs(projection) <= 1e-6).sum()
                         weight = 1.0 / (neq)
@@ -379,23 +313,18 @@ class HarmonicWithQ(Observable):
                             for jpol in np.arange(3):
                                 dyn_s[iat, ipol, jat, jpol] += fc_s[
                                      jat, jpol, t[0], t[1], t[2], iat, ipol] * np.exp(-1j * qr) * weight
-
-
-
         dyn = dyn_s[...].reshape((n_unit_cell * 3, n_unit_cell * 3))
-
         omega2,eigenvect,info = zheev(dyn)
         frequency = np.sign(omega2) * np.sqrt(np.abs(omega2))
         frequency = frequency[:] / np.pi / 2
         if only_eigenvals:
-            esystem = (frequency[ :] * np.pi * 2) ** 2
+            esystem = (frequency[:] * np.pi * 2) ** 2
         else:
             esystem = np.vstack(((frequency[:] * np.pi * 2) ** 2, eigenvect))
         return esystem
 
 
-    def calculate_dynmat_derivatives_lapack(self, direction=None):
-
+    def calculate_dynmat_derivatives_unfolded(self, direction=None):
         q_point = self.q_point
         supercell = self.supercell
         atoms = self.atoms
@@ -403,22 +332,18 @@ class HarmonicWithQ(Observable):
         n_unit_cell = atoms.positions.shape[0]
         ddyn_s = np.zeros((n_unit_cell, 3, n_unit_cell, 3), dtype=np.complex)
         positions = atoms.positions
-        fc_s = self._dynmat.numpy()
+        fc_s = self.second.dynmat.numpy()
         fc_s = fc_s.reshape((n_unit_cell, 3, supercell[0], supercell[1], supercell[2], n_unit_cell, 3))
-
-        sc_r_pos = self._supercell_positions
+        sc_r_pos = self.second.supercell_positions
         sc_r_pos_norm = 1 / 2 * np.linalg.norm(sc_r_pos, axis=1) ** 2
-        tt = self._supercell_replicas
-
+        tt = self.second.supercell_replicas
         for ind in range(tt.shape[0]):
             t = tt[ind]
             replica_position = np.tensordot(t, cell, (-1, 0))
-
             for iat in np.arange(n_unit_cell):
                 for jat in np.arange(n_unit_cell):
                     distance = replica_position + (positions[iat] - positions[jat])
                     projection = (np.dot(sc_r_pos, distance) - sc_r_pos_norm)
-
                     if (projection <= 1e-6).all():
                         neq = (np.abs(projection) <= 1e-6).sum()
                         weight = 1.0 / (neq)
